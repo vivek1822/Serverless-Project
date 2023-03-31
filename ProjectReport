@@ -1,0 +1,136 @@
+In this project, I will share an example on how we can deploy a locally trained Machine Learning model in cloud using AWS SageMaker service.
+
+Before going to the deployment example to be discussed shortly, I will try to give some basic details on the AWS services used, so that readers who are completely new to AWS can do some further basic study on AWS themselves if needed, prior to trying the steps and services discussed in this project.
+
+AWS SageMaker
+Amazon SageMaker is a fully managed machine learning service. It helps data scientists and developers to prepare, build, train, and deploy high-quality machine learning (ML) models quickly. It provides an integrated Jupyter authoring notebook instance for easy access to your data sources for exploration and analysis.
+
+Amazon S3
+Amazon Simple Storage Service (Amazon S3) is an object storage service that offers industry-leading scalability, data availability, security, and performance. We can use S3 to store any files, models, input data for training models, etc.
+
+Lambda
+AWS Lambda is a serverless compute service that lets you run code without provisioning or managing servers. Just upload your code as a ZIP file or container image, and Lambda automatically and precisely allocates compute execution power and runs your code based on the incoming request or event, for any scale of traffic.
+
+AWS API Gateway
+Amazon API Gateway is a fully managed service that makes it easy for developers to create, publish, maintain, monitor, and secure APIs at any scale. APIs act as the “front door” for applications to access data, business logic, or functionality from your backend services. Using API Gateway, you can create RESTful APIs and WebSocket APIs that enable real-time two-way communication applications.
+
+Deployment of Models in SageMaker
+In short, SageMaker is a ML service provided by AWS for coding, training and deploying ML models on the cloud. If we go through the SageMaker developer guide we can understand how vast and varied the service framework is, including built-in support for a number of popular algorithms ranging from Linear Learner, XGBoost, K-NN, K-Means etc. to Deep Learning frameworks like Tensorflow, MXNet etc.
+
+PLAN OF ACTION 
+1. Load the dataset and train a model in local laptop without using any cloud library or SageMaker.
+2. Upload the trained model file to AWS SageMaker and deploy there. Deployment includes placing the model in S3 bucket, creating a SageMaker model object, configuring and creating the endpoints, and a few server-less services (API gateway and Lambda ) to trigger the endpoint from outside world.
+3. Use a local client ( We use Postman ) to send a sample test data to the deployed model in the cloud and get the prediction back to the client
+
+Step-1: Training the Model
+
+1. In Local Laptop, use Jupyter notebook to train a XGBoost classification model on the popular Iris flower dataset
+2. Test the model and save the model file locally using joblib.
+
+In the iris-model-creation notebook, basically we download the iris flower data set, run a simple XGBoost model on it, test it and save the model as a local file using joblib dump. We save some sample flower data in test_point.csv for testing purpose.
+
+Step-2 Deploying the Model in SageMaker
+
+1. In AWS console, create a SageMaker notebook instance and open a Jupyter notebook.
+2. Run the Iris model-deployment notebook in SageMaker
+
+The notebook code does the following.
+* Load the model file, open it and test and then upload it to a S3 bucket ( from where SageMaker will take the model artifacts).
+* Create a SageMaker model object from the model stored in S3. We will use SageMaker built-in XGBoost container for this purpose, as the model was locally trained with XGBoost algorithm. Depending on the algorithm you use for modelling, you have to properly pick the corresponding built-in container and deal with the nuances associated with that..SageMaker developer guide should help in that.
+* Create an Endpoint Configuration. Endpoint is the interface through which the outer world can use a deployed model for predictions. More details about Endpoints can be found in SageMaker documentation.
+* Create an Endpoint for the model.
+* Invoke the endpoint from within the deployment notebook to confirm the endpoint and the model are working fine.
+3. After running the notebook till this point, you can see the endpoint created.
+
+Step-3: Launching necessary AWS Services for End-to-End Communication
+
+After completing the above steps, we will have the model deployed and a SageMaker endpoint ready to be invoked from outside world to get real time predictions from the deployed model.
+
+Step-4: Create a IAM role that includes the following policy, which gives your Lambda function permission to invoke a model endpoint
+
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Sid": "VisualEditor0",
+            "Effect": "Allow",
+            "Action": "sagemaker:InvokeEndpoint",
+            "Resource": "*"
+        }
+    ]
+}
+
+Select Lambda as the use case in AWS service, while creating the role and attach the policy to the role.
+
+Step-5: Create a Lambda function with the below mentioned python code, that calls the SageMaker runtime invoke_endpoint and returns the prediction.
+
+import os
+import boto3
+import json
+# grab environment variables
+ENDPOINT_NAME = os.environ['ENDPOINT_NAME']
+runtime= boto3.client('runtime.sagemaker')
+def lambda_handler(event, context):
+    print("Received event: " + json.dumps(event, indent=2))
+    
+    data = json.loads(json.dumps(event))
+    payload = data['data']
+    #print(payload)
+    
+    response = runtime.invoke_endpoint(EndpointName=ENDPOINT_NAME,
+                                       ContentType='text/csv',
+                                       Body=payload)
+    #print(response)
+    result = json.loads(response['Body'].read().decode())
+   
+    classes = ['Setosa', 'Versicolor', 'Virginica']
+    res_list =  [ float(i) for i in result]
+    return classes[res_list.index(max(res_list))]
+    
+   1. Select “Author from Scratch” and give a function name and select Runtime as Python 3.9 as shown below.
+   2. Select “Use an existing role” and pick the role you created in the previous step.
+   3. Select “Use an existing role” and pick the role you created in the previous step.
+   4. Under the code section of the lambda, enter the python code given at the beginning of this step. Remember to click “Deploy” after entering the code.
+   5. Go to the Configuration tab of the Lambda function and add an environment variable “ENDPOINT_NAME” and set it’s value as the same endpoint that was created in the preceding steps. Note that this environment variable is used in the Lambda function’s code.
+    
+    we have completed setting up the Lambda function.
+    
+    Step-6: Create a REST API and integrate with the Lambda function
+    
+    1. Select API Gateway service on AWS console, and select REST API.
+    2. Click on Build and select “New API” . In the next window you get, select “Create Resource” from Actions drop-down menu, and enter a Resource Name.
+    
+    Note down the Resource Name you choose. It will be a part of the URL created by this service and will be used later when we test the deployment from Postman. Here we have chosen resource name as “irisprediction”. After creating the resource, select “Create Method” from Actions drop-down menu.
+    
+    3. Select POST method and “Lambda Function” as Integration type. Enter the name of the Lambda Function you created in the previous steps. Then, select “Deploy API” from Actions drop-down menu. Select Deployment stage “New Stage” and give some stage name. I chose to enter “test”.
+       Then, finally when you click “Deploy”, you will be given a “Invoke URL” as shown below.
+    4. Please note down the URL displayed on the window as “Invoke URL”. It will be used in Postman to contact the API gateway, as described below.
+    
+    Now we are done with the deployment and setup of the end-to-end communication path.
+    
+    
+    Step-7: Testing the final Deployment from local client
+    
+    Finally, use Postman App in your laptop, to POST the Iris flower test data to API gateway and get the prediction result back from AWS cloud.
+    For example, if the Invoke URL you got was
+                https://kmnia554df.execute-api.us-east-1.amazonaws.com/test/
+                
+     append the resource name to the above URL and use in the postman. For example in our case it was “irisprediction” . You can see the screen snapshot given below for the full example URL.
+      Use method : POST
+       In the Body, raw input can be given like :
+          {“data”:”5.099999999999999645e+00,3.299999999999999822e+00,1.699999999999999956e+00,5.000000000000000000e-01"}
+          
+       You can refer to the test_point.csv for sample data. The four numerical parameters given as data are nothing but sample sepal length, sepal width, petal length and petal width of some Iris flower data point.
+       
+       When we send the data, we successfully invoke the deployed model endpoint and receive back the flower prediction as “Setosa” in the example above.
+
+
+
+So, we have successfully deployed a locally trained model on the AWS cloud using SageMaker and seen it working for real-time inference !
+    
+
+
+
+
+
+
